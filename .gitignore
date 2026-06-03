@@ -1,0 +1,17 @@
+﻿# Runtime / local generated files
+logs/
+state/
+queue/*
+!queue/.gitkeep
+*.log
+*.tmp
+
+# Python / Node cache
+__pycache__/
+*.pyc
+node_modules/
+
+# Secrets
+*.secret.*
+.env
+.env.*

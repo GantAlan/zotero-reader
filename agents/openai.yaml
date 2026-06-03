@@ -1,0 +1,4 @@
+interface:
+  display_name: "Zotero Reader"
+  short_description: "Run Zotero/Codex paper-reading workers."
+  default_prompt: "Use $zotero-reader to set up a Zotero paper-reading package, choose a collection path, build the queue, run one-shot workers, monitor progress, and import notes back into Zotero."

@@ -1,0 +1,24 @@
+# Runtime outputs
+logs/
+logs-*/
+queue/*
+!queue/.gitkeep
+
+# Generated reading notes and smoke-test outputs
+study-paper/
+study-paper-smoke*/
+study-paper-worker-once-test*/
+
+# Temporary helper files
+*.stdout.log
+*.stderr.log
+*.tmp
+*.bak
+*.chat.mjs
+
+# Local/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+

@@ -1,0 +1,38 @@
+{
+  "root": ".",
+  "studyRoot": "study-paper",
+  "logRoot": "logs",
+  "queueFile": "queue\\paper-reading-pool-queue.json",
+  "workerCount": 1,
+  "workerIdPrefix": "worker",
+  "workerIdDigits": 2,
+  "taskPrefix": "ZoteroPaperReadingPool",
+  "maxSupportedWorkers": 50,
+  "codexModel": "mimo-v2.5",
+  "codexReasoningEffort": "xhigh",
+  "codexWireApi": "auto",
+  "codexEnableSearch": true,
+  "codexSandbox": "workspace-write",
+  "codexAskForApproval": "never",
+  "maxAttempts": 3,
+  "leaseHours": 3,
+  "maxRunningPerCollection": 1,
+  "mutexName": "Global\\ZoteroPaperReadingPoolQueue",
+  "workerSleepSeconds": 30,
+  "monitorRefreshSeconds": 60,
+  "zoteroStyleCandidates": [
+    "%USERPROFILE%\\Zotero\\zoterostyle.json"
+  ],
+  "collections": [
+    {
+      "top": "Example",
+      "name": "Example Collection",
+      "key": "REPLACE_WITH_ZOTERO_COLLECTION_KEY",
+      "pathParts": [
+        "Example",
+        "Example Collection"
+      ]
+    }
+  ]
+}
+
