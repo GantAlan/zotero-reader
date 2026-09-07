@@ -49,6 +49,8 @@ zotero-reader/
 ```powershell
 $env:NO_PROXY='localhost,127.0.0.1'
 $env:no_proxy='localhost,127.0.0.1'
+
+如果 Zotero 本地 API 使用了非默认地址或端口，请在 `configs/paper-reading-pool-config.json` 中设置 `zoteroLocalApiBaseUrl`。
 ```
 
 ## 4. 创建运行包

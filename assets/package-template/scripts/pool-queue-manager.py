@@ -7,7 +7,10 @@ from collections import OrderedDict
 from datetime import datetime, timedelta
 from pathlib import Path
 
-BASE = "http://127.0.0.1:23119/api/users/0"
+ZOTERO_BASE = os.environ.get("ZOTERO_LOCAL_BASE_URL", "http://127.0.0.1:23119").rstrip("/")
+if ZOTERO_BASE.lower().endswith("/api/users/0"):
+    ZOTERO_BASE = ZOTERO_BASE[: -len("/api/users/0")].rstrip("/")
+BASE = ZOTERO_BASE + "/api/users/0"
 HEADERS = {"Zotero-API-Version": "3"}
 BIB_TYPES = {"journalArticle", "conferencePaper", "thesis", "bookSection", "book", "preprint", "report"}
 

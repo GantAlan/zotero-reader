@@ -15,6 +15,11 @@ $packageDir = Split-Path -Parent $scriptDir
 if (-not $ConfigFile) { $ConfigFile = Join-Path $packageDir 'configs\paper-reading-pool-config.json' }
 if (-not (Test-Path -LiteralPath $ConfigFile)) { throw "Config file not found: $ConfigFile" }
 if (-not $Path -and -not $Key) { throw 'Provide -Path "Top -> Child" or -Key <collectionKey>.' }
+$initialConfig = Get-Content -LiteralPath $ConfigFile -Raw -Encoding UTF8 | ConvertFrom-Json
+$zoteroBaseUrl = if ($initialConfig.zoteroLocalApiBaseUrl) { [string]$initialConfig.zoteroLocalApiBaseUrl } else { [string]$env:ZOTERO_LOCAL_BASE_URL }
+if (-not $zoteroBaseUrl) { $zoteroBaseUrl = 'http://127.0.0.1:23119' }
+$zoteroBaseUrl = $zoteroBaseUrl.TrimEnd('/')
+if ($zoteroBaseUrl.EndsWith('/api/users/0', [StringComparison]::OrdinalIgnoreCase)) { $zoteroBaseUrl = $zoteroBaseUrl.Substring(0, $zoteroBaseUrl.Length - '/api/users/0'.Length).TrimEnd('/') }
 
 function Ensure-LocalNoProxy {
     foreach ($name in @('NO_PROXY', 'no_proxy')) {
@@ -48,7 +53,7 @@ function Invoke-ZoteroApi {
 
 function Get-ZoteroCollections {
     Ensure-LocalNoProxy
-    $base = 'http://127.0.0.1:23119/api/users/0/collections?format=json&limit=100'
+    $base = $zoteroBaseUrl + '/api/users/0/collections?format=json&limit=100'
     $all = @()
     $start = 0
     while ($true) {

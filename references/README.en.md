@@ -49,6 +49,8 @@ Recommended PowerShell environment variables:
 ```powershell
 $env:NO_PROXY='localhost,127.0.0.1'
 $env:no_proxy='localhost,127.0.0.1'
+
+If Zotero's local API is exposed on a non-default host or port, set `zoteroLocalApiBaseUrl` in `configs/paper-reading-pool-config.json`.
 ```
 
 ## 4. Scaffold A Runtime Package

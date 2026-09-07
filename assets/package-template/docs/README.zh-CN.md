@@ -9,6 +9,8 @@
 ```powershell
 $env:NO_PROXY='localhost,127.0.0.1'
 $env:no_proxy='localhost,127.0.0.1'
+
+如果 Zotero 本地 API 使用了非默认地址或端口，请在 `configs/paper-reading-pool-config.json` 中设置 `zoteroLocalApiBaseUrl`，例如 `http://127.0.0.1:23120`。
 powershell -NoProfile -ExecutionPolicy Bypass -File ".\scripts\set-zotero-collection.ps1" -Path "一级分组 -> 二级分组" -RebuildQueue
 powershell -NoProfile -ExecutionPolicy Bypass -File ".\scripts\run-zotero-paper-reading-pool.ps1" -QueueStatus
 powershell -NoProfile -ExecutionPolicy Bypass -File ".\scripts\run-zotero-paper-reading-pool.ps1" -Once

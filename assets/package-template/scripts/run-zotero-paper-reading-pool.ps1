@@ -656,6 +656,8 @@ function Invoke-WithQueueLock {
 function Invoke-QueueManager {
     param([Parameter(Mandatory = $true)][ValidateSet('init','status','prepare','finalize','fail')][string]$Mode)
     $python = Resolve-Python
+    $runtimeConfig = Get-Content -LiteralPath $ConfigFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($runtimeConfig.zoteroLocalApiBaseUrl) { $env:ZOTERO_LOCAL_BASE_URL = [string]$runtimeConfig.zoteroLocalApiBaseUrl }
     $env:QUEUE_MODE = $Mode
     $env:CONFIG_FILE = $ConfigFile
     $env:QUEUE_FILE = $queueFile
