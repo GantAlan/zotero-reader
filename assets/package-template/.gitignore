@@ -1,6 +1,8 @@
 # Runtime outputs
 logs/
 logs-*/
+state/
+study-data/
 queue/*
 !queue/.gitkeep
 

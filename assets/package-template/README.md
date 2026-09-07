@@ -63,3 +63,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ".\scripts\verify-zotero-not
 ```
 
 Do not run multiple Zotero note writers concurrently.
+
+
+## Reliability and machine-readable outputs
+
+After rebuilding a queue, inspect `queue/excluded-pdf-report.md`. The queue only runs items classified as `pdf_ready`. Runtime state is stored in `state/current-run.json` and `state/runs/<runId>`. Generated reading notes also have validated JSON sidecars and idempotent JSONL outputs under `study-data/`.

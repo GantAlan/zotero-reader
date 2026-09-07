@@ -126,6 +126,9 @@ Important generated files:
 ```text
 configs/paper-reading-pool-config.json
 queue/paper-reading-pool-queue.json
+state/current-run.json
+study-data/papers.jsonl
+study-data/evidence.jsonl
 queue/excluded-no-pdf-report.md
 queue/excluded-no-pdf-report.csv
 ```
@@ -165,7 +168,7 @@ For example, start 3 workers:
 powershell -NoProfile -ExecutionPolicy Bypass -File ".\scripts\run-once-workers.ps1" -WorkerCount 3
 ```
 
-This mode is best for a finite batch. The script starts multiple background jobs, waits for them to finish, and prints queue status while they run. By default, it temporarily raises `MaxRunningPerCollection` to allow same-collection parallelism, then restores the original value.
+This mode is best for a finite batch. The script starts multiple background jobs, waits for them to finish, and prints queue status while they run. By default, it passes an ephemeral `MaxRunningPerCollection` override to the workers, so the package config is not rewritten.
 
 ## 10. Run Persistent Workers
 
@@ -267,4 +270,20 @@ Check for machine-specific paths:
 
 ```powershell
 rg -n "C:\\Users|D:\\|E:\\|F:\\" .
+```
+
+
+## Reliability, Privacy, and Structured Outputs
+
+- `QueueOnly` verifies that a PDF attachment resolves to an existing local file. Availability is classified as `no_attachment`, `attachment_not_local`, `file_missing`, `unsupported_file`, or `pdf_ready`; extraction failures are recorded as `pdf_extract_failed`.
+- Each run writes `state/current-run.json`, `state/runs/<runId>/run.json`, and worker PID state files. Stop operations verify the PID, process start time, package/config path, workerId, and runId before terminating a process.
+- Leave `projectId` empty to derive a stable identifier from the package directory, or set a unique value if the package will move between directories. Project mutexes and scheduled-task names include that identifier.
+- Shared defaults live in `configs/paper-reading-pool-defaults.json`. Successful runs do not retain prompts, PDF chunks, or raw model output by default; `logRetentionDays` controls cleanup.
+- PDFs are read as page-aware chunks with `chunkId`, page ranges, and section hints. Each note has a Markdown file plus a structured JSON sidecar validated by `validate-reading-note.py`.
+- Idempotent machine-readable research data is written to `study-data/papers.jsonl` and `study-data/evidence.jsonl`.
+
+If health check reports that no PDF extraction backend is installed, install one in the Python environment used by the package:
+
+```powershell
+python -m pip install pypdf
 ```

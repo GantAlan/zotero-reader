@@ -97,3 +97,16 @@ Do not commit real API keys, `.env` files, local logs, generated runtime state, 
 - `references/workflow.md`
 - `references/parameter-guide.md`
 - `assets/package-template/docs/`
+
+
+## Reliability and structured reading
+
+The current package template also provides:
+
+- local PDF readiness classification and exclusion reports;
+- project-scoped mutexes, stable scheduled-task names, runId/PID state files, and identity-checked stopping;
+- shared defaults and privacy-aware log cleanup;
+- page-aware PDF chunks with page/section evidence anchors;
+- schema-validated JSON sidecars plus idempotent `papers.jsonl` and `evidence.jsonl` research data.
+
+Use the package template from `assets/package-template`; do not edit the installed copy under `%USERPROFILE%\\.codex\\skills\\zotero-reader` while maintaining the repository.

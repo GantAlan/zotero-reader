@@ -10,7 +10,13 @@ docs/
 scripts/
   set-zotero-collection.ps1
   run-once-workers.ps1
+  pool-runtime-common.ps1
+  extract-pdf-chunks.py
+  validate-reading-note.py
+  write-study-data.py
 configs/paper-reading-pool-config.example.json
+configs/paper-reading-pool-defaults.json
+schemas/reading-note.schema.json
 EDIT-TASK-PARAMS.ps1
 EDIT-TASK-PARAMS.annotated.ps1
 study-paper-template/
@@ -31,12 +37,14 @@ configs/paper-reading-pool-config.json
 logs/
 logs-*/
 queue/*
+state/
+study-data/
 study-paper/
 study-paper-smoke*/
 study-paper-worker-once-test*/
 ```
 
-These files can contain runtime logs, extracted full text, prompts, queue state, model outputs, and local Zotero item metadata.
+These files can contain runtime logs, PDF chunks, prompts, queue state, model outputs, structured study data, and local Zotero item metadata.
 
 ## Secret Check
 
@@ -79,7 +87,7 @@ From the package root:
 
 ```powershell
 git status
-git add README.md docs scripts configs EDIT-TASK-PARAMS.ps1 EDIT-TASK-PARAMS.annotated.ps1 study-paper-template .gitignore queue/.gitkeep
+git add README.md docs scripts configs/paper-reading-pool-config.example.json configs/paper-reading-pool-defaults.json schemas EDIT-TASK-PARAMS.ps1 EDIT-TASK-PARAMS.annotated.ps1 study-paper-template .gitignore queue/.gitkeep
 git status
 ```
 

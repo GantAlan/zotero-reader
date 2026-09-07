@@ -38,7 +38,7 @@ WorkerSleepSeconds: 30
 MonitorRefreshSeconds: 60
 MaxAttempts: 3
 LeaseHours: 3
-MaxRunningPerCollection: 1 for stability; one-shot worker script can temporarily raise it
+MaxRunningPerCollection: 1 for stability; one-shot worker script can pass a temporary override without rewriting config
 Sandbox: workspace-write
 AskForApproval: never
 ```
@@ -58,3 +58,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ".\scripts\run-once-workers.
 ```
 
 Use the persistent pool only for long unattended runs.
+
+
+## New reliability and quality settings
+
+Add a stable `projectId` and `runtimeNamespace` for every package. Keep `maxRunningPerCollection = 1` until a foreground test succeeds. Shared fallbacks are in `configs/paper-reading-pool-defaults.json`.
+
+The queue now separates missing or unusable PDF states. After rebuilding the queue, inspect `queue/excluded-pdf-report.md` and `queue/excluded-pdf-report.csv`. Do not treat `pdf_attachment` as readable until the state is `pdf_ready`.
+
+For quality-sensitive runs, keep `pdfChunkingEnabled = true`, `pdfMaxCharsPerChunk = 18000`, `pdfChunkOverlapChars = 1200`, and `pdfMaxPagesPerChunk = 4`. The model must return page/section/chunk evidence in the structured JSON block. The worker validates the sidecar before finalizing the queue item.
+
+Machine-readable outputs are idempotent: `study-data/papers.jsonl` has one record per `collectionKey + itemKey`, and `study-data/evidence.jsonl` has one record per evidence id.

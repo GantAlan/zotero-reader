@@ -107,3 +107,13 @@ Do not run multiple Zotero note writers concurrently. Verify imported notes with
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File ".\scripts\verify-zotero-note-imports.ps1"
 ```
+
+
+## Reliability and structured-reading rules
+
+- Rebuilds classify local PDF availability as `no_attachment`, `attachment_not_local`, `file_missing`, `unsupported_file`, or `pdf_ready`. Inspect `queue/excluded-pdf-report.md` before increasing worker count.
+- Runtime state is project-scoped. Each run has a `runId`, a current-run file, a run summary, and worker state files with PID/start-time identity. Stop operations must not kill processes that fail identity verification.
+- Leave `projectId` empty to derive a stable package-directory identity, or set a unique value when moving/copying packages. Queue mutexes and scheduled task names derive from it; do not restore the old global queue mutex name.
+- Shared defaults live in `configs/paper-reading-pool-defaults.json`. Keep prompts, PDF text, and raw model output disabled by default unless debugging requires temporary retention.
+- Workers read PDFs through `extract-pdf-chunks.py`. A successful note requires a structured JSON sidecar with chunk ids, page ranges, section hints, and evidence anchors; Markdown is a rendered companion, not the only data product.
+- Machine-readable outputs are written idempotently to `study-data/papers.jsonl` and `study-data/evidence.jsonl`. Run `validate-reading-note.py` on sidecars and `render-reading-note.py` when investigating quality issues.

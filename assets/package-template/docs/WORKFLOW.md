@@ -101,3 +101,26 @@ Keep imports serialized; do not run multiple Zotero note writers concurrently.
 - If total Zotero items are higher than queued items, inspect `queue/excluded-no-pdf-report.md`; missing PDFs are intentionally excluded.
 - If a one-worker foreground run fails, do not raise `WorkerCount`; fix model/proxy/Zotero/PDF-text issues first.
 - If a non-GPT model is used, keep `WireApi = auto` or `chat`; direct chat mode cannot use Responses-only search tools.
+
+
+## Reliability and reading-quality runtime
+
+The queue builder probes every bibliographic item before enqueueing it. The availability field is one of: `no_attachment`, `attachment_not_local`, `file_missing`, `unsupported_file`, or `pdf_ready`. Review `queue/excluded-pdf-report.md` after `QueueOnly`. A text extraction error is recorded as `pdf_extract_failed`.
+
+Runtime identity is stored under `state/`:
+
+- `current-run.json` points to the latest project run.
+- `runs/<runId>/run.json` stores the run summary.
+- `runs/<runId>/workers/<workerId>.json` stores PID, process start time, script/config paths, and status.
+
+Leave `projectId` empty to derive a stable package-directory identity, or set a unique `projectId` before moving/copying the package. The project mutex is derived from the namespace and project id, and scheduled tasks use stable names such as `ZoteroPaperReadingPool_<projectId>_01`.
+
+PDF extraction is page-aware. `extract-pdf-chunks.py` creates chunk ids, page ranges, and section hints. The worker requires a structured JSON block with chunk summaries and evidence anchors before it accepts a Markdown note. The validated sidecar is written next to the note; JSONL records are written to `study-data/papers.jsonl` and `study-data/evidence.jsonl`.
+
+Privacy defaults are conservative: prompts, PDF chunk text, and raw model output are removed after successful tasks. Change `retainPrompts`, `retainPdfText`, `retainRawModelOutput`, `retainFailureDiagnostics`, and `logRetentionDays` only when needed.
+
+Manual evidence rendering:
+
+```powershell
+python .\scripts\render-reading-note.py --markdown .\study-paper\<collection>\<note>.md --record .\study-paper\<collection>\<note>.json
+```

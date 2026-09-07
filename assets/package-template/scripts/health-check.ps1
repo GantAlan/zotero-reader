@@ -8,6 +8,13 @@ $ErrorActionPreference = 'Stop'
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $packageDir = Split-Path -Parent $scriptDir
 if (-not $ConfigFile) { $ConfigFile = Join-Path $packageDir 'configs\paper-reading-pool-config.json' }
+if (-not (Test-Path -LiteralPath $ConfigFile)) { throw "Config file not found: $ConfigFile" }
+$config = Get-Content -LiteralPath $ConfigFile -Raw -Encoding UTF8 | ConvertFrom-Json
+$runtimeCommon = Join-Path $scriptDir 'pool-runtime-common.ps1'
+if (-not (Test-Path -LiteralPath $runtimeCommon)) { throw "Runtime helper not found: $runtimeCommon" }
+. $runtimeCommon
+$defaults = Get-PoolDefaults -PackageDir $packageDir
+$identity = Get-PoolProjectIdentity -Config $config -PackageDir $packageDir
 
 function Resolve-PackagePath {
     param([Parameter(Mandatory = $true)][string]$PathValue, [string]$BasePath = $packageDir)
@@ -129,7 +136,14 @@ $requiredFiles = @(
     (Join-Path $scriptDir 'manage-paper-reading-pool.ps1'),
     (Join-Path $scriptDir 'install-pool-workers.ps1'),
     (Join-Path $packageDir 'study-paper-template\reading-note-template.md'),
-    (Join-Path $packageDir 'study-paper-template\fill-instructions.md')
+    (Join-Path $packageDir 'study-paper-template\fill-instructions.md'),
+    (Join-Path $scriptDir 'pool-runtime-common.ps1'),
+    (Join-Path $packageDir 'configs\paper-reading-pool-defaults.json'),
+    (Join-Path $scriptDir 'extract-pdf-chunks.py'),
+    (Join-Path $packageDir 'schemas\reading-note.schema.json'),
+    (Join-Path $scriptDir 'validate-reading-note.py'),
+    (Join-Path $scriptDir 'write-study-data.py'),
+    (Join-Path $scriptDir 'render-reading-note.py')
 )
 
 foreach ($file in $requiredFiles) {
@@ -147,10 +161,15 @@ try {
     exit 1
 }
 
-$root = Resolve-PackagePath ([string]$config.root)
+$root = $identity.Root
 $logRoot = Resolve-PackagePath ([string]$config.logRoot) $root
 $studyRoot = Resolve-PackagePath ([string]$config.studyRoot) $root
 $queueFile = Resolve-PackagePath ([string]$config.queueFile) $root
+$stateRoot = Get-PoolStateRoot -Config $config -Root $root
+$dataRoot = Resolve-PackagePath ([string](Get-PoolConfigValue -Config $config -Defaults $defaults -Name 'outputDataRoot' -Fallback 'study-data')) $root
+Write-Check 'Project identity' $true ("projectId={0}; runtimeNamespace={1}" -f $identity.ProjectId, $identity.RuntimeNamespace)
+Write-Check 'Resolved state output' $true $stateRoot
+Write-Check 'Resolved study data output' $true $dataRoot
 Write-Check 'Resolved root' $true $root
 Write-Check 'Resolved study output' $true $studyRoot
 Write-Check 'Resolved log output' $true $logRoot
@@ -207,6 +226,24 @@ try {
 } catch {
     $failed++
     Write-Check 'Python runtime' $false $_.Exception.Message
+}
+
+if ($python) {
+    $pdfBackend = (& $python -c "import importlib.util; print('pypdf' if importlib.util.find_spec('pypdf') else ('PyPDF2' if importlib.util.find_spec('PyPDF2') else 'missing'))" 2>&1 | Select-Object -Last 1).Trim()
+    if ($pdfBackend -eq 'missing') { $failed++; Write-Check 'PDF extraction backend' $false 'Install pypdf or PyPDF2 in the configured Python environment.' } else { Write-Check 'PDF extraction backend' $true $pdfBackend }
+}
+
+$logCleanup = { Invoke-PoolLogCleanup -Config $config -Defaults $defaults -RootPath $root }
+& $logCleanup
+
+if (Test-Path -LiteralPath $queueFile) {
+    try {
+        $queue = Get-Content -LiteralPath $queueFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        $availability = if ($queue.pdfAvailabilityCounts) { ($queue.pdfAvailabilityCounts | ConvertTo-Json -Compress) } else { 'legacy queue; rebuild to classify local PDF availability' }
+        Write-Check 'Queue local PDF classification' $true $availability
+        $badItems = @($queue.items | Where-Object { $_.pdfAvailability -and $_.pdfAvailability -ne 'pdf_ready' })
+        if ($badItems.Count -gt 0) { $failed++; Write-Check 'Queued items have usable local PDFs' $false ("{0} queued item(s) are not pdf_ready" -f $badItems.Count) } else { Write-Check 'Queued items have usable local PDFs' $true ("{0} queued item(s)" -f @($queue.items).Count) }
+    } catch { $failed++; Write-Check 'Queue local PDF classification' $false $_.Exception.Message }
 }
 
 $zoteroProbe = Test-ZoteroLocalApi

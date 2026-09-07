@@ -7,6 +7,24 @@
   "workerIdPrefix": "worker",
   "workerIdDigits": 2,
   "taskPrefix": "ZoteroPaperReadingPool",
+  "projectId": "",
+  "runtimeNamespace": "zotero-reader",
+  "stateRoot": "state",
+  "projectMutexName": "",
+  "mutexName": "",
+  "logRetentionDays": 14,
+  "retainPrompts": false,
+  "retainPdfText": false,
+  "retainRawModelOutput": false,
+  "retainFailureDiagnostics": true,
+  "redactSensitivePaths": true,
+  "pdfChunkingEnabled": true,
+  "pdfMaxCharsPerChunk": 18000,
+  "pdfChunkOverlapChars": 1200,
+  "pdfMaxPagesPerChunk": 4,
+  "pdfMaxPromptChars": 180000,
+  "outputDataRoot": "study-data",
+  "readingNoteSchema": "schemas\\reading-note.schema.json",
   "maxSupportedWorkers": 50,
   "codexModel": "mimo-v2.5",
   "codexReasoningEffort": "xhigh",
@@ -22,7 +40,6 @@
   "maxAttempts": 3,
   "leaseHours": 3,
   "maxRunningPerCollection": 1,
-  "mutexName": "Global\\ZoteroPaperReadingPoolQueue",
   "workerSleepSeconds": 30,
   "monitorRefreshSeconds": 60,
   "zoteroStyleCandidates": [
@@ -38,5 +55,6 @@
         "Example Collection"
       ]
     }
-  ]
+  ],
+  "runReservationGraceSeconds": 120
 }

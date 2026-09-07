@@ -3,7 +3,9 @@ param(
     [string]$WorkerId = "worker-01",
     [switch]$QueueOnly,
     [switch]$QueueStatus,
-    [switch]$Once
+    [switch]$Once,
+    [string]$RunId,
+    [int]$MaxRunningPerCollectionOverride = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -14,7 +16,13 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $packageDir = Split-Path -Parent $scriptDir
 if (-not $ConfigFile) { $ConfigFile = Join-Path $packageDir 'configs\paper-reading-pool-config.json' }
 if (-not (Test-Path -LiteralPath $ConfigFile)) { throw "Config file not found: $ConfigFile" }
+$ConfigFile = (Resolve-Path -LiteralPath $ConfigFile).Path
 $config = Get-Content -LiteralPath $ConfigFile -Raw -Encoding UTF8 | ConvertFrom-Json
+$runtimeCommon = Join-Path $scriptDir 'pool-runtime-common.ps1'
+if (-not (Test-Path -LiteralPath $runtimeCommon)) { throw "Runtime helper not found: $runtimeCommon" }
+. $runtimeCommon
+$defaults = Get-PoolDefaults -PackageDir $packageDir
+$identity = Get-PoolProjectIdentity -Config $config -PackageDir $packageDir
 
 function Resolve-ConfiguredPath {
     param([Parameter(Mandatory = $true)][string]$PathValue, [string]$BasePath = $packageDir)
@@ -78,15 +86,23 @@ function Resolve-Codex {
     return Resolve-Executable -ConfiguredValue $configured -CommandNames @('codex') -FallbackPaths @($fallback) -DisplayName 'codex.exe'
 }
 
-$root = Resolve-ConfiguredPath ([string]$config.root)
-$studyRoot = Resolve-ConfiguredPath ([string]$config.studyRoot) $root
-$logRoot = Resolve-ConfiguredPath ([string]$config.logRoot) $root
-$queueFile = Resolve-ConfiguredPath ([string]$config.queueFile) $root
-$mutexName = if ($config.mutexName) { [string]$config.mutexName } else { 'Global\ZoteroPaperReadingPoolQueue' }
-$maxAttempts = if ($config.maxAttempts) { [int]$config.maxAttempts } else { 3 }
-$leaseHours = if ($config.leaseHours) { [int]$config.leaseHours } else { 8 }
-$workerSleepSeconds = if ($config.workerSleepSeconds) { [int]$config.workerSleepSeconds } else { 30 }
-$maxRunningPerCollection = if ($config.maxRunningPerCollection) { [int]$config.maxRunningPerCollection } else { 1 }
+$root = $identity.Root
+$studyRoot = Resolve-ConfiguredPath ([string](Get-PoolConfigValue -Config $config -Defaults $defaults -Name 'studyRoot' -Fallback 'study-paper')) $root
+$logRoot = Resolve-ConfiguredPath ([string](Get-PoolConfigValue -Config $config -Defaults $defaults -Name 'logRoot' -Fallback 'logs')) $root
+$queueFile = Resolve-ConfiguredPath ([string](Get-PoolConfigValue -Config $config -Defaults $defaults -Name 'queueFile' -Fallback 'queue\paper-reading-pool-queue.json')) $root
+$dataRoot = Resolve-ConfiguredPath ([string](Get-PoolConfigValue -Config $config -Defaults $defaults -Name 'outputDataRoot' -Fallback 'study-data')) $root
+$mutexName = Get-PoolQueueMutexName -Config $config -Identity $identity
+$maxAttempts = Get-PoolConfigInt -Config $config -Defaults $defaults -Name 'maxAttempts' -Fallback 3
+$leaseHours = Get-PoolConfigInt -Config $config -Defaults $defaults -Name 'leaseHours' -Fallback 3
+$workerSleepSeconds = Get-PoolConfigInt -Config $config -Defaults $defaults -Name 'workerSleepSeconds' -Fallback 30
+$maxRunningPerCollection = if ($MaxRunningPerCollectionOverride -gt 0) { $MaxRunningPerCollectionOverride } else { Get-PoolConfigInt -Config $config -Defaults $defaults -Name 'maxRunningPerCollection' -Fallback 1 }
+$pdfChunkingEnabled = Get-PoolConfigBool -Config $config -Defaults $defaults -Name 'pdfChunkingEnabled' -Fallback $true
+$pdfMaxCharsPerChunk = Get-PoolConfigInt -Config $config -Defaults $defaults -Name 'pdfMaxCharsPerChunk' -Fallback 18000
+$pdfChunkOverlapChars = Get-PoolConfigInt -Config $config -Defaults $defaults -Name 'pdfChunkOverlapChars' -Fallback 1200
+$pdfMaxPagesPerChunk = Get-PoolConfigInt -Config $config -Defaults $defaults -Name 'pdfMaxPagesPerChunk' -Fallback 4
+$pdfMaxPromptChars = Get-PoolConfigInt -Config $config -Defaults $defaults -Name 'pdfMaxPromptChars' -Fallback 180000
+$requestedRunId = [string]$RunId
+$runId = Get-PoolRunId -RequestedRunId $RunId
 
 function Resolve-CodexWireApi {
     param(
@@ -269,7 +285,7 @@ async function main() {
 try {
   process.exitCode = await main();
 } catch (error) {
-  await writeLog(`ERROR: chat completion helper crashed model=${model}\n${error?.stack || error?.message || String(error)}\n`);
+  await fs.appendFile(stdoutLogFile, `ERROR: chat completion helper crashed endpoint=${endpoint} model=${model}\n${error?.stack || error?.message || String(error)}\nCAUSE=${error?.cause?.code || ''} ${error?.cause?.message || ''}\n`, 'utf8');
   process.exitCode = 1;
 }
 '@
@@ -516,35 +532,29 @@ function Get-FirstAuthorLastName {
     param($Creators)
     $first = @($Creators) | Where-Object { $_ } | Select-Object -First 1
     if (-not $first) { return 'Unknown' }
-    $first = [string]$first
-    if ($first.Contains(',')) {
-        $name = $first.Split(',')[0].Trim()
-    } else {
+    $first = ([string]$first).Trim()
+    if ($first.Contains(',')) { $name = $first.Split(',')[0].Trim() }
+    elseif ($first -match '^([\p{IsCJKUnifiedIdeographs}]{2,8})') { $name = $matches[1] }
+    else {
         $parts = $first -split '\s+'
         $name = $parts[$parts.Count - 1]
     }
-    $name = $name -replace '[^A-Za-z0-9_-]', ''
-    if ($name) { return $name }
-    return 'Unknown'
+    $name = [regex]::Replace($name, '[^\p{L}\p{N}_-]', '')
+    if (-not $name) { return 'Unknown' }
+    if ($name.Length -gt 24) { $name = $name.Substring(0, 24) }
+    return $name
 }
 
 function Get-TitleKeywordSlug {
     param([string]$Title)
     if (-not $Title) { return 'Untitled' }
-    $stopWords = @(
-        'the','and','for','with','from','into','onto','that','this','these','those','using','based',
-        'study','effect','effects','method','methods','prepared','preparation','properties'
-    )
-    $words = [regex]::Matches($Title, '[A-Za-z0-9]+') |
-        ForEach-Object { $_.Value } |
-        Where-Object { $_.Length -gt 2 -and ($stopWords -notcontains $_.ToLowerInvariant()) } |
-        Select-Object -First 6
-    if (-not $words -or @($words).Count -eq 0) {
-        $words = [regex]::Matches($Title, '[A-Za-z0-9]+') | ForEach-Object { $_.Value } | Select-Object -First 6
-    }
-    $slug = (@($words) -join '-')
-    if ($slug) { return $slug }
-    return 'Untitled'
+    $stopWords = @('the','and','for','with','from','into','onto','that','this','these','those','using','based','study','effect','effects','method','methods','prepared','preparation','properties')
+    $tokens = [regex]::Matches($Title, '[\p{IsCJKUnifiedIdeographs}]{2,10}|[A-Za-z0-9]{3,}') | ForEach-Object { $_.Value } |
+        Where-Object { $stopWords -notcontains $_.ToLowerInvariant() } | Select-Object -First 6
+    if (-not $tokens -or @($tokens).Count -eq 0) { $tokens = [regex]::Matches($Title, '[\p{IsCJKUnifiedIdeographs}]{2,10}|[A-Za-z0-9]{3,}') | ForEach-Object { $_.Value } | Select-Object -First 6 }
+    $slug = (@($tokens) -join '-')
+    if (-not $slug) { return 'Untitled' }
+    return $slug
 }
 
 function ConvertTo-SafeFileName {
@@ -561,40 +571,44 @@ function ConvertTo-SafeFileName {
     return $safe
 }
 
-function Export-PdfText {
+function Export-PdfChunks {
     param([string]$PythonExe, [string]$PdfPath, [string]$OutputPath)
-    if (-not $PdfPath -or -not (Test-Path -LiteralPath $PdfPath)) { return $false }
-    $extractScript = [System.IO.Path]::ChangeExtension($OutputPath, '.extract.py')
-    $extractCode = @'
-import sys
-pdf_path, out_path = sys.argv[1], sys.argv[2]
-text = ""
-try:
-    from pdfminer.high_level import extract_text
-    text = extract_text(pdf_path) or ""
-except Exception:
-    try:
-        from PyPDF2 import PdfReader
-        reader = PdfReader(pdf_path)
-        text = "\n".join((page.extract_text() or "") for page in reader.pages)
-    except Exception as exc:
-        raise SystemExit(str(exc))
-with open(out_path, "w", encoding="utf-8") as f:
-    f.write(text)
-print(len(text))
-'@
-    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText($extractScript, $extractCode, $utf8NoBom)
+    if (-not $PdfPath) { return [pscustomobject]@{ Ok = $false; Code = 'file_missing'; Detail = 'No local PDF path was resolved.' } }
+    if (-not (Test-Path -LiteralPath $PdfPath)) { return [pscustomobject]@{ Ok = $false; Code = 'file_missing'; Detail = "PDF file does not exist: $PdfPath" } }
+    if (-not $pdfChunkingEnabled) { return [pscustomobject]@{ Ok = $false; Code = 'pdf_extract_failed'; Detail = 'PDF chunking is disabled.' } }
+    $extractor = Join-Path $scriptDir 'extract-pdf-chunks.py'
+    if (-not (Test-Path -LiteralPath $extractor)) { return [pscustomobject]@{ Ok = $false; Code = 'pdf_extract_failed'; Detail = "Chunk extractor not found: $extractor" } }
     $oldEap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        $output = & $PythonExe $extractScript $PdfPath $OutputPath 2>&1
+        $output = & $PythonExe $extractor $PdfPath $OutputPath '--max-chars' ([string]$pdfMaxCharsPerChunk) '--overlap-chars' ([string]$pdfChunkOverlapChars) '--max-pages' ([string]$pdfMaxPagesPerChunk) 2>&1
         $exitCode = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $oldEap }
+    if ($exitCode -ne 0 -or -not (Test-Path -LiteralPath $OutputPath)) {
+        $detail = (($output | ForEach-Object { [string]$_ }) -join [Environment]::NewLine)
+        return [pscustomobject]@{ Ok = $false; Code = 'pdf_extract_failed'; Detail = $detail }
     }
-    finally {
-        $ErrorActionPreference = $oldEap
+    try {
+        $document = Get-Content -LiteralPath $OutputPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if (-not $document.chunks -or @($document.chunks).Count -eq 0) { return [pscustomobject]@{ Ok = $false; Code = 'pdf_extract_failed'; Detail = 'PDF extractor returned zero chunks.' } }
+        return [pscustomobject]@{ Ok = $true; Code = 'pdf_ready'; Detail = "pages=$($document.pageCount) chunks=$(@($document.chunks).Count)"; Document = $document }
+    } catch {
+        return [pscustomobject]@{ Ok = $false; Code = 'pdf_extract_failed'; Detail = "Chunk JSON could not be parsed: $($_.Exception.Message)" }
     }
-    return ($exitCode -eq 0 -and (Test-Path -LiteralPath $OutputPath) -and ((Get-Item -LiteralPath $OutputPath).Length -gt 0))
+}
+
+if (-not $requestedRunId) {
+    Invoke-PoolProjectMutex -Config $config -Identity $identity -Body {
+        if (Test-PoolRunReservation -Config $config -Identity $identity -ExcludeRunId $runId) {
+            throw "Another run is already reserved for project '$($identity.ProjectId)'. Stop it or wait for its reservation to expire."
+        }
+        $active = @(Get-PoolActiveWorkerStates -Config $config -Identity $identity)
+        if ($active.Count -gt 0) {
+            $activeText = ($active | ForEach-Object { "$($_.workerId) pid=$($_.pid) run=$($_.runId)" }) -join '; '
+            throw "Active workers already exist for project '$($identity.ProjectId)': $activeText"
+        }
+        New-PoolRunState -Config $config -Identity $identity -RunId $runId -WorkerIds @($WorkerId) | Out-Null
+    }
 }
 
 $styleCacheFile = Resolve-ZoteroStyleCache
@@ -614,7 +628,8 @@ $env:FASTMCP_LOG_LEVEL = 'ERROR'
 
 function Write-SchedulerLog {
     param([string]$Message)
-    $line = "$(Get-Date -Format s) [$WorkerId] $Message$([Environment]::NewLine)"
+    $safeMessage = if (Get-PoolConfigBool -Config $config -Defaults $defaults -Name 'redactSensitivePaths' -Fallback $true) { ConvertTo-PoolPrivacySafeText -Text $Message -RootPath $root -AdditionalPaths @($zoteroDataDir) } else { $Message }
+    $line = "$(Get-Date -Format s) [$WorkerId] $safeMessage$([Environment]::NewLine)"
     $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
     for ($attempt = 1; $attempt -le 8; $attempt++) {
         try {
@@ -636,6 +651,32 @@ function Get-TextForPrompt {
     $headChars = [Math]::Min([int]($MaxChars * 0.65), $text.Length)
     $tailChars = [Math]::Min($MaxChars - $headChars, $text.Length - $headChars)
     return $text.Substring(0, $headChars) + "`n`n[... PDF text truncated by worker ...]`n`n" + $text.Substring($text.Length - $tailChars)
+}
+
+function Get-ChunksForPrompt {
+    param([Parameter(Mandatory = $true)]$Document, [int]$MaxChars = 180000)
+    $builder = New-Object System.Text.StringBuilder
+    $chunks = @($Document.chunks)
+    $omitted = 0
+    $nl = [Environment]::NewLine
+    foreach ($chunk in $chunks) {
+        $block = "<<<PDF_CHUNK id=$($chunk.chunkId) pages=$($chunk.pageStart)-$($chunk.pageEnd) section=$($chunk.section)>>>" + $nl + [string]$chunk.text + $nl + "<<<END_PDF_CHUNK>>>" + $nl + $nl
+        if (($builder.Length + $block.Length) -le $MaxChars) { [void]$builder.Append($block) } else { $omitted++ }
+    }
+    if ($omitted -gt 0) { [void]$builder.Append("[PDF_CHUNKS_OMITTED=$omitted DUE_TO_PROMPT_LIMIT; DO NOT INVENT EVIDENCE FOR OMITTED CHUNKS]" + $nl) }
+    return $builder.ToString().Trim()
+}
+
+function Invoke-StudyDataWriter {
+    param([Parameter(Mandatory = $true)][string]$PythonExe, [Parameter(Mandatory = $true)][string]$RecordFile)
+    $writer = Join-Path $scriptDir 'write-study-data.py'
+    $oldEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = & $PythonExe $writer '--record-file' $RecordFile '--data-root' $dataRoot 2>&1
+        $code = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $oldEap }
+    if ($code -ne 0) { throw "Study JSONL writer failed: $output" }
 }
 
 function Invoke-WithQueueLock {
@@ -664,7 +705,7 @@ function Invoke-QueueManager {
     $env:SELECTION_FILE = $selectionFile
     $env:RESULT_FILE = $resultFile
     $env:WORKER_ID = $WorkerId
-    $env:RUN_ID = $timestamp
+    $env:RUN_ID = $runId
     $env:LEASE_HOURS = [string]$leaseHours
     $env:MAX_ATTEMPTS = [string]$maxAttempts
     $env:MAX_RUNNING_PER_COLLECTION = [string]$maxRunningPerCollection
@@ -692,8 +733,23 @@ if ($QueueStatus) {
     return
 }
 
+$workerScriptPath = $MyInvocation.MyCommand.Path
+Invoke-PoolLogCleanup -Config $config -Defaults $defaults -RootPath $root
+Invoke-PoolStateMutex -Config $config -Identity $identity -Body {
+    $sameWorker = @(Get-PoolActiveWorkerStates -Config $config -Identity $identity | Where-Object { $_.workerId -eq $WorkerId })
+    if ($sameWorker.Count -gt 0) { throw "WorkerId '$WorkerId' is already active for project '$($identity.ProjectId)'." }
+    New-PoolWorkerState -Config $config -Identity $identity -RunId $runId -WorkerId $WorkerId -ProcessId $PID -WorkerScript $workerScriptPath -ConfigFile $ConfigFile | Out-Null
+}
+Write-SchedulerLog "worker started runId=$runId pid=$PID project=$($identity.ProjectId)"
+
+function Set-StandaloneRunStatus {
+    param([Parameter(Mandatory = $true)][string]$Status)
+    if (-not $requestedRunId) { try { Set-PoolRunStatus -Config $config -Identity $identity -RunId $runId -Status $Status } catch {} }
+}
+
 while ($true) {
     $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+    Update-PoolWorkerState -Config $config -Identity $identity -RunId $runId -WorkerId $WorkerId -Status 'running'
     $workerLogDir = Join-Path $logRoot $WorkerId
     New-Item -ItemType Directory -Force -Path $workerLogDir | Out-Null
     $stdoutLog = Join-Path $workerLogDir "codex_paper_run_$timestamp.log"
@@ -706,7 +762,7 @@ while ($true) {
         $selection = Get-Content -LiteralPath $selectionFile -Raw -Encoding UTF8 | ConvertFrom-Json
         if (-not $selection.selected) {
             Write-SchedulerLog "no pending item"
-            if ($selection.allCompleted -or $Once) { return }
+            if ($selection.allCompleted -or $Once) { Update-PoolWorkerState -Config $config -Identity $identity -RunId $runId -WorkerId $WorkerId -Status $(if ($Once) { 'completed' } else { 'idle' }); Set-StandaloneRunStatus -Status 'completed'; return }
             Start-Sleep -Seconds $workerSleepSeconds
             continue
         }
@@ -728,13 +784,15 @@ while ($true) {
         $styleRankSummary = Get-StyleRankSummary $styleCacheFile ([string]$target.publicationTitle)
         $styleCacheInstruction = if ($styleCacheFile) { $styleCacheFile } else { 'not configured; journal quartile lookup is optional and skipped' }
         $generatedAt = Get-Date -Format 'yyyy/MM/dd HH:mm:ss'
-        $pdfTextFile = Join-Path $workerLogDir "codex_paper_fulltext_$timestamp.txt"
+        $pdfChunksFile = Join-Path $workerLogDir "codex_paper_pdf_chunks_$timestamp.json"
         $pdfFilePath = Resolve-ZoteroAttachmentFilePath -AttachmentKey ([string]$target.attachmentKey) -PythonExe $pythonExeForPrompt -OptionalHelper $zoteroHelper
-        $pdfTextReady = Export-PdfText $pythonExeForPrompt $pdfFilePath $pdfTextFile
-        $pdfTextInstruction = if ($pdfTextReady) { $pdfTextFile } else { 'not pre-extracted; use the local PDF path or Zotero helper fallback' }
+        $pdfExtraction = Export-PdfChunks $pythonExeForPrompt $pdfFilePath $pdfChunksFile
+        if (-not $pdfExtraction.Ok) { throw "$($pdfExtraction.Code): $($pdfExtraction.Detail)" }
+        $pdfDocument = $pdfExtraction.Document
+        $pdfTextInstruction = $pdfChunksFile
         $templateTextForPrompt = Get-TextForPrompt $templateFile 20000
         $instructionTextForPrompt = Get-TextForPrompt $instructionFile 30000
-        $pdfTextForPrompt = if ($pdfTextReady) { Get-TextForPrompt $pdfTextFile 70000 } else { '' }
+        $pdfTextForPrompt = Get-ChunksForPrompt -Document $pdfDocument -MaxChars $pdfMaxPromptChars
         $defaultAuthor = Get-FirstAuthorLastName $target.creators
         $defaultYear = if ($target.year) { [string]$target.year } else { 'unknown-year' }
         $defaultTitleSlug = Get-TitleKeywordSlug ([string]$target.title)
@@ -763,7 +821,7 @@ Required inputs:
 - Windows Python executable: $pythonExeForPrompt
 - Zotero helper script: $zoteroHelperText
 - Local PDF file: $pdfFilePath
-- Pre-extracted PDF text file: $pdfTextInstruction
+- Pre-extracted PDF chunk JSON file: $pdfTextInstruction
 - Precomputed journal quartile summary: $styleRankSummary
 - GeneratedAt timestamp for the Basic Information Date row: $generatedAt
 - Default output filename if you cannot make a better one: $defaultNoteFileName
@@ -778,14 +836,14 @@ Field instructions content:
 $instructionTextForPrompt
 FILL_INSTRUCTIONS
 
-Pre-extracted PDF text, possibly truncated by the worker:
-<<<PDF_TEXT
+Page-aware PDF chunks, possibly limited by the worker prompt budget:
+<<<PDF_CHUNKS
 $pdfTextForPrompt
-PDF_TEXT
+PDF_CHUNKS
 
 Workflow requirements:
-1. Do not run shell commands, Python commands, MCP tools, or Zotero helper commands. The worker has already provided the metadata, template, instructions, journal quartile summary, and PDF text above.
-2. Do not try to access Zotero again. Use only the provided target paper metadata and PDF text.
+1. Do not run shell commands, Python commands, MCP tools, or Zotero helper commands. The worker has already provided the metadata, template, instructions, journal quartile summary, and page-aware PDF chunks above.
+2. Do not try to access Zotero again. Use only the provided target paper metadata and page-aware PDF chunks.
 3. Do not print analysis steps such as "I will read more" or "Let me check metadata". Produce the final protocol directly.
 4. Use the embedded template and field instructions above.
 5. Fill every field in Chinese according to the instructions.
@@ -795,7 +853,8 @@ Workflow requirements:
 9. Do not add colors, HTML, CSS, badges, or decorative Markdown styles.
 10. Keep terminal output brief. Do not echo large files such as PDF full text, Zotero Style JSON, or the completed note.
 11. Do not write or modify any files. The worker script will write the Markdown note and result JSON after parsing your final response.
-12. Return your final answer using exactly the output protocol below. Do not wrap the protocol in a Markdown code fence. The response is invalid unless it contains both BEGIN_READING_NOTE_METADATA_JSON and BEGIN_READING_NOTE_MARKDOWN blocks.
+12. Every material claim, result, method, or conclusion must be traceable to one or more PDF chunk IDs. Use the chunk pageStart/pageEnd and section values for evidence anchors; never invent page numbers.
+13. Return your final answer using exactly the output protocol below. Do not wrap the protocol in a Markdown code fence. The response is invalid unless it contains BEGIN_READING_NOTE_METADATA_JSON, BEGIN_READING_NOTE_STRUCTURED_JSON, and BEGIN_READING_NOTE_MARKDOWN blocks.
 
 Final output protocol:
 BEGIN_READING_NOTE_METADATA_JSON
@@ -808,6 +867,17 @@ BEGIN_READING_NOTE_METADATA_JSON
   "quartileSource": "Zotero Style zoterostyle.json or other source"
 }
 END_READING_NOTE_METADATA_JSON
+BEGIN_READING_NOTE_STRUCTURED_JSON
+{
+  "schemaVersion": 1,
+  "itemKey": "$($target.itemKey)",
+  "attachmentKey": "$($target.attachmentKey)",
+  "title": "$($target.title)",
+  "generatedAt": "$generatedAt",
+  "chunks": [{"chunkId": "chunk-0001-p0001-p0004", "pageStart": 1, "pageEnd": 4, "section": "Introduction", "summary": "..."}],
+  "evidence": [{"evidenceId": "e1", "claim": "...", "quote": "...", "chunkIds": ["chunk-0001-p0001-p0004"], "pageStart": 1, "pageEnd": 4, "section": "Introduction"}]
+}
+END_READING_NOTE_STRUCTURED_JSON
 BEGIN_READING_NOTE_MARKDOWN
 # 完整的中文精读笔记 Markdown
 END_READING_NOTE_MARKDOWN
@@ -832,6 +902,7 @@ If you cannot complete the note, do not output the markers. Explain the blocker 
         Write-SchedulerLog "started item=$($target.itemKey) collection=$collectionPath model=$($codexConfig.Model) effort=$($codexConfig.ReasoningEffort) wire_api=$($codexConfig.WireApi)"
         $lastText = ''
         $metadataText = $null
+        $structuredText = $null
         $noteMarkdown = $null
         for ($codexAttempt = 1; $codexAttempt -le 2; $codexAttempt++) {
             $attemptPromptFile = if ($codexAttempt -eq 1) { $promptFile } else { Join-Path $workerLogDir "codex_paper_prompt_$($timestamp)_retry$codexAttempt.txt" }
@@ -843,7 +914,7 @@ If you cannot complete the note, do not output the markers. Explain the blocker 
 $prompt
 
 IMPORTANT RETRY INSTRUCTION:
-Your previous response did not contain the required BEGIN/END protocol markers. Do not run commands. Do not inspect files. Do not explain what you will do. Output the completed note now using exactly the required protocol blocks.
+Your previous response did not contain the required Markdown and structured JSON BEGIN/END protocol markers. Do not run commands. Do not inspect files. Do not explain what you will do. Output the completed note now using exactly the required protocol blocks.
 "@
             }
             [System.IO.File]::WriteAllText($attemptPromptFile, $attemptPrompt, $utf8NoBom)
@@ -872,25 +943,54 @@ Your previous response did not contain the required BEGIN/END protocol markers. 
             if (-not (Test-Path -LiteralPath $attemptLastMessage)) { throw "Model last message file missing: $attemptLastMessage" }
             $lastText = Get-Content -LiteralPath $attemptLastMessage -Raw -Encoding UTF8
             $metadataText = Get-DelimitedBlock $lastText 'BEGIN_READING_NOTE_METADATA_JSON' 'END_READING_NOTE_METADATA_JSON'
+            $structuredText = Get-DelimitedBlock $lastText 'BEGIN_READING_NOTE_STRUCTURED_JSON' 'END_READING_NOTE_STRUCTURED_JSON'
             $noteMarkdown = Get-DelimitedBlock $lastText 'BEGIN_READING_NOTE_MARKDOWN' 'END_READING_NOTE_MARKDOWN'
-            if ($noteMarkdown) {
+            if ($metadataText -and $noteMarkdown -and $structuredText) {
                 $lastMessage = $attemptLastMessage
                 break
             }
             Write-SchedulerLog "$($codexConfig.WireApi) attempt $codexAttempt missing protocol markers; retrying item=$($target.itemKey)"
         }
-        if (-not $noteMarkdown) { throw "Model final response did not contain BEGIN/END_READING_NOTE_MARKDOWN markers after retry. See: $lastMessage" }
+        if (-not $metadataText -or -not $noteMarkdown -or -not $structuredText) { throw "Model final response did not contain the required metadata, Markdown, and structured JSON protocol markers after retry. See: $lastMessage" }
         if ($noteMarkdown.Length -lt 1000) { throw "Generated note is too short ($($noteMarkdown.Length) chars). See: $lastMessage" }
         if ($noteMarkdown -match '\{中文标题\}|\{English Title\}|\{作者列表\}|待填写|TODO_PLACEHOLDER') {
             throw "Generated note still appears to contain template placeholders. See: $lastMessage"
         }
         $metadata = $null
-        if ($metadataText) {
-            try { $metadata = $metadataText | ConvertFrom-Json } catch { throw "Metadata JSON parse failed: $($_.Exception.Message). See: $lastMessage" }
-        }
+        try { $metadata = $metadataText | ConvertFrom-Json } catch { throw "Metadata JSON parse failed: $($_.Exception.Message). See: $lastMessage" }
         if ($metadata -and $metadata.itemKey -and ([string]$metadata.itemKey -ne [string]$target.itemKey)) {
             throw "Metadata itemKey mismatch: $($metadata.itemKey) != $($target.itemKey)"
         }
+        $structured = $null
+        try { $structured = $structuredText | ConvertFrom-Json } catch { throw "Structured reading note JSON parse failed: $($_.Exception.Message). See: $lastMessage" }
+        if ($null -eq $structured -or [int]$structured.schemaVersion -ne 1) { throw "Structured reading note schemaVersion must be 1. See: $lastMessage" }
+        if ([string]$structured.itemKey -ne [string]$target.itemKey -or [string]$structured.attachmentKey -ne [string]$target.attachmentKey) { throw "Structured reading note item or attachment key mismatch. See: $lastMessage" }
+        $knownChunkIds = @($pdfDocument.chunks | ForEach-Object { [string]$_.chunkId })
+        $knownChunkSections = @{}
+        foreach ($sourceChunk in @($pdfDocument.chunks)) { $knownChunkSections[[string]$sourceChunk.chunkId] = $sourceChunk.section }
+        $structuredChunks = @($structured.chunks)
+        if ($structuredChunks.Count -eq 0) { throw "Structured reading note contains no chunk summaries. See: $lastMessage" }
+        $structuredEvidence = @($structured.evidence)
+        if ($structuredEvidence.Count -eq 0) { throw "Structured reading note contains no evidence anchors. See: $lastMessage" }
+        foreach ($chunk in $structuredChunks) {
+            if ($knownChunkIds -notcontains [string]$chunk.chunkId) { throw "Structured note references unknown chunk: $($chunk.chunkId)" }
+            if (-not ($chunk.PSObject.Properties.Name -contains 'section')) { $chunk | Add-Member -NotePropertyName section -NotePropertyValue $knownChunkSections[[string]$chunk.chunkId] }
+            if ([int]$chunk.pageStart -lt 1 -or [int]$chunk.pageEnd -lt [int]$chunk.pageStart) { throw "Invalid structured chunk page range: $($chunk.chunkId)" }
+        }
+        foreach ($evidence in $structuredEvidence) {
+            if (-not $evidence.chunkIds -or @($evidence.chunkIds).Count -eq 0) { throw "Evidence item has no chunkIds." }
+            foreach ($chunkId in @($evidence.chunkIds)) { if ($knownChunkIds -notcontains [string]$chunkId) { throw "Evidence references unknown chunk: $chunkId" } }
+            if (-not ($evidence.PSObject.Properties.Name -contains 'section')) { $evidence | Add-Member -NotePropertyName section -NotePropertyValue $knownChunkSections[[string]@($evidence.chunkIds)[0]] }
+            if ([int]$evidence.pageStart -lt 1 -or [int]$evidence.pageEnd -lt [int]$evidence.pageStart) { throw "Invalid evidence page range: $($evidence.evidenceId)" }
+        }
+        foreach ($propertyName in @('noteFile', 'collectionKey', 'collectionPath', 'title', 'generatedAt')) {
+            if (-not ($structured.PSObject.Properties.Name -contains $propertyName)) {
+                $structured | Add-Member -NotePropertyName $propertyName -NotePropertyValue $null
+            }
+        }
+        $structured.schemaVersion = 1
+        $structured.generatedAt = $generatedAt
+
         $rawFileName = if ($metadata -and $metadata.fileName) { [string]$metadata.fileName } else { $defaultNoteFileName }
         $noteFileName = ConvertTo-SafeFileName $rawFileName
         if (-not $noteFileName.EndsWith('.md', [StringComparison]::OrdinalIgnoreCase)) { $noteFileName += '.md' }
@@ -901,26 +1001,52 @@ Your previous response did not contain the required BEGIN/END protocol markers. 
         $noteMarkdown = Repair-ReadingNoteDate -Markdown $noteMarkdown -GeneratedAt $generatedAt
         $outputFile = Join-Path $targetOutputDir $noteFileName
         [System.IO.File]::WriteAllText($outputFile, $noteMarkdown.Trim() + [Environment]::NewLine, $utf8NoBom)
+        $noteFileRelative = $outputFile
+        if ($outputFile.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { $noteFileRelative = $outputFile.Substring($root.Length).TrimStart('\', '/') }
+        $structured.noteFile = $noteFileRelative
+        $structured.collectionKey = [string]$target.collectionKey
+        $structured.collectionPath = $collectionPath
+        $structured.title = [string]$target.title
+        $structured.generatedAt = $generatedAt
+        $structuredFile = [System.IO.Path]::ChangeExtension($outputFile, '.json')
+        [System.IO.File]::WriteAllText($structuredFile, ($structured | ConvertTo-Json -Depth 40) + [Environment]::NewLine, $utf8NoBom)
+        $validator = Join-Path $scriptDir 'validate-reading-note.py'
+        $validationOutput = & $pythonExeForPrompt $validator $structuredFile 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "Reading note schema validation failed: $validationOutput" }
+        $renderer = Join-Path $scriptDir 'render-reading-note.py'
+        $renderOutput = & $pythonExeForPrompt $renderer '--markdown' $outputFile '--record' $structuredFile '--output' $outputFile 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "Reading note evidence rendering failed: $renderOutput" }
         $result = [pscustomobject]@{
+
             status = 'completed'
             itemKey = [string]$target.itemKey
             attachmentKey = [string]$target.attachmentKey
             title = [string]$target.title
+            runId = [string]$runId
+            workerId = [string]$WorkerId
             outputFile = $outputFile
+            structuredFile = $structuredFile
             quartileSource = if ($metadata -and $metadata.quartileSource) { [string]$metadata.quartileSource } else { "Zotero Style cache; $styleRankSummary" }
             generatedBy = 'worker parsed Codex final response'
         }
         $resultJson = $result | ConvertTo-Json -Depth 10
         [System.IO.File]::WriteAllText($resultFile, $resultJson, $utf8NoBom)
-        Invoke-WithQueueLock { Invoke-QueueManager -Mode 'finalize' } | Out-Null
+        Invoke-WithQueueLock { Invoke-StudyDataWriter -PythonExe $pythonExeForPrompt -RecordFile $structuredFile; Invoke-QueueManager -Mode 'finalize' } | Out-Null
         Write-SchedulerLog "completed item=$($target.itemKey) result=$resultFile"
     }
     catch {
         $failureMessage = $_.Exception.Message
-        $env:QUEUE_ERROR = $failureMessage
+        $safeFailureMessage = if (Get-PoolConfigBool -Config $config -Defaults $defaults -Name 'redactSensitivePaths' -Fallback $true) { ConvertTo-PoolPrivacySafeText -Text $failureMessage -RootPath $root -AdditionalPaths @($zoteroDataDir) } else { $failureMessage }
+        $env:QUEUE_ERROR = $safeFailureMessage
+        $env:QUEUE_ERROR_CODE = if ($failureMessage -match '(?i)pdf_extract_failed') { 'pdf_extract_failed' } elseif ($failureMessage -match '(?i)file does not exist|local PDF') { 'file_missing' } elseif ($failureMessage -match '(?i)protocol markers|structured') { 'model_protocol_invalid' } else { 'worker_failed' }
         try { Invoke-WithQueueLock { Invoke-QueueManager -Mode 'fail' } | Out-Null } catch {}
         Write-SchedulerLog "failed: $failureMessage"
+        Invoke-PoolArtifactCleanup -Config $config -Defaults $defaults -WorkerLogDir $workerLogDir -Succeeded $false -RootPath $root
+        Update-PoolWorkerState -Config $config -Identity $identity -RunId $runId -WorkerId $WorkerId -Status $(if ($Once) { 'failed' } else { 'idle' }) -ExitCode $(if ($Once) { 1 } else { $null })
+        if ($Once) { Set-StandaloneRunStatus -Status 'failed' }
         if ($Once) { throw $failureMessage }
     }
-    if ($Once) { return }
+    Invoke-PoolArtifactCleanup -Config $config -Defaults $defaults -WorkerLogDir $workerLogDir -Succeeded $true -RootPath $root
+    if ($Once) { Update-PoolWorkerState -Config $config -Identity $identity -RunId $runId -WorkerId $WorkerId -Status 'completed' -ExitCode 0; Set-StandaloneRunStatus -Status 'completed'; return }
+    Update-PoolWorkerState -Config $config -Identity $identity -RunId $runId -WorkerId $WorkerId -Status 'idle'
 }

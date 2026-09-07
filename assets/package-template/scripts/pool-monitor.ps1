@@ -10,6 +10,13 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $packageDir = Split-Path -Parent $scriptDir
 if (-not $ConfigFile) { $ConfigFile = Join-Path $packageDir 'configs\paper-reading-pool-config.json' }
 if (-not (Test-Path -LiteralPath $ConfigFile)) { throw "Config file not found: $ConfigFile" }
+$ConfigFile = (Resolve-Path -LiteralPath $ConfigFile).Path
+$config = Get-Content -LiteralPath $ConfigFile -Raw -Encoding UTF8 | ConvertFrom-Json
+$runtimeCommon = Join-Path $scriptDir 'pool-runtime-common.ps1'
+if (-not (Test-Path -LiteralPath $runtimeCommon)) { throw "Runtime helper not found: $runtimeCommon" }
+. $runtimeCommon
+$defaults = Get-PoolDefaults -PackageDir $packageDir
+$identity = Get-PoolProjectIdentity -Config $config -PackageDir $packageDir
 
 function Resolve-PackagePath {
     param([Parameter(Mandatory = $true)][string]$PathValue, [string]$BasePath = $packageDir)
@@ -35,29 +42,31 @@ function Resolve-CodexWireApi {
 while ($true) {
     Clear-Host
     $config = Get-Content -LiteralPath $ConfigFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    $identity = Get-PoolProjectIdentity -Config $config -PackageDir $packageDir
     $effectiveRefreshSeconds = if ($RefreshSeconds -gt 0) {
         $RefreshSeconds
-    } elseif ($config.monitorRefreshSeconds) {
-        [int]$config.monitorRefreshSeconds
     } else {
-        5
+        Get-PoolConfigInt -Config $config -Defaults $defaults -Name 'monitorRefreshSeconds' -Fallback 60
     }
-    $root = Resolve-PackagePath ([string]$config.root)
+    $root = $identity.Root
     $queueFile = Resolve-PackagePath ([string]$config.queueFile) $root
     $logRoot = Resolve-PackagePath ([string]$config.logRoot) $root
     $studyRoot = Resolve-PackagePath ([string]$config.studyRoot) $root
-    $workerCount = if ($config.workerCount) { [int]$config.workerCount } else { 1 }
-    $model = if ($config.codexModel) { [string]$config.codexModel } else { 'mimo-v2.5' }
-    $reasoningEffort = if ($config.codexReasoningEffort) { [string]$config.codexReasoningEffort } else { 'xhigh' }
-    $configuredWireApi = if ($config.PSObject.Properties.Name -contains 'codexWireApi') { [string]$config.codexWireApi } else { 'auto' }
+    $workerCount = Get-PoolConfigInt -Config $config -Defaults $defaults -Name 'workerCount' -Fallback 1
+    $model = [string](Get-PoolConfigValue -Config $config -Defaults $defaults -Name 'codexModel' -Fallback 'mimo-v2.5')
+    $reasoningEffort = [string](Get-PoolConfigValue -Config $config -Defaults $defaults -Name 'codexReasoningEffort' -Fallback 'xhigh')
+    $configuredWireApi = [string](Get-PoolConfigValue -Config $config -Defaults $defaults -Name 'codexWireApi' -Fallback 'auto')
     $effectiveWireApi = Resolve-CodexWireApi -Model $model -ConfiguredWireApi $configuredWireApi
-    $enableSearch = if ($null -ne $config.codexEnableSearch) { [bool]$config.codexEnableSearch } else { $true }
+    $enableSearch = Get-PoolConfigBool -Config $config -Defaults $defaults -Name 'codexEnableSearch' -Fallback $true
+    Invoke-PoolLogCleanup -Config $config -Defaults $defaults -RootPath $root
+    $activeStates = @(Get-PoolActiveWorkerStates -Config $config -Identity $identity)
 
     Write-Host "============================================" -ForegroundColor Cyan
     Write-Host ("  Zotero Paper Reading Pool - {0} Workers" -f $workerCount) -ForegroundColor Cyan
     Write-Host "============================================" -ForegroundColor Cyan
     Write-Host ("Model: {0} | Effort: {1} | WireApi: {2} -> {3} | Search: {4}" -f $model, $reasoningEffort, $configuredWireApi, $effectiveWireApi, $enableSearch) -ForegroundColor White
-    Write-Host ("MaxRunningPerCollection: {0} | Sleep: {1}s | MaxAttempts: {2} | LeaseHours: {3}" -f $config.maxRunningPerCollection, $config.workerSleepSeconds, $config.maxAttempts, $config.leaseHours) -ForegroundColor DarkGray
+    Write-Host ("Project: {0} | Active verified states: {1}" -f $identity.ProjectId, $activeStates.Count) -ForegroundColor DarkGray
+    Write-Host ("MaxRunningPerCollection: {0} | Sleep: {1}s | MaxAttempts: {2} | LeaseHours: {3}" -f (Get-PoolConfigInt -Config $config -Defaults $defaults -Name 'maxRunningPerCollection' -Fallback 1), (Get-PoolConfigInt -Config $config -Defaults $defaults -Name 'workerSleepSeconds' -Fallback 30), (Get-PoolConfigInt -Config $config -Defaults $defaults -Name 'maxAttempts' -Fallback 3), (Get-PoolConfigInt -Config $config -Defaults $defaults -Name 'leaseHours' -Fallback 3)) -ForegroundColor DarkGray
 
     if (Test-Path -LiteralPath $queueFile) {
         try {
@@ -67,7 +76,8 @@ while ($true) {
             $done = @($queue.items | Where-Object { $_.status -eq 'done' }).Count
             $failed = @($queue.items | Where-Object { $_.status -eq 'failed' }).Count
             Write-Host ""
-            Write-Host "Total: $($queue.total) | Pending: $pending | Running: $running | Done: $done | Failed: $failed"
+            Write-Host "Total: $($queue.total) | Pending: $pending | Running: $running | Done: $done | Failed: $failed | PDF excluded: $($queue.excludedPdfCount)"
+            if ($queue.pdfAvailabilityCounts) { Write-Host ('PDF availability: ' + ($queue.pdfAvailabilityCounts | ConvertTo-Json -Compress)) }
             Write-Host ""
             Write-Host "Running items:" -ForegroundColor White
             $queue.items | Where-Object { $_.status -eq 'running' } | ForEach-Object {
