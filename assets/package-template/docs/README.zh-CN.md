@@ -22,11 +22,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ".\scripts\run-once-workers.
 
 ## 说明
 
-完整中文说明见技能目录中的：
-
-```text
-references/README.zh-CN.md
-```
+本文件是运行包内的完整中文快速说明。技能仓库中的 `references/README.zh-CN.md` 提供维护者使用的扩展说明；运行包本身不需要复制 `references/` 目录。
 
 常用文件：
 

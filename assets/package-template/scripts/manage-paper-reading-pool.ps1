@@ -123,7 +123,7 @@ function Show-PoolStatus {
     $configuredWireApi = if ($config.PSObject.Properties.Name -contains 'codexWireApi') { [string]$config.codexWireApi } else { 'auto' }
     $effectiveWireApi = Resolve-CodexWireApi -Model $model -ConfiguredWireApi $configuredWireApi
 
-    Write-Host ('Configured workerCount: {0}' -f (Get-ConfigInt $config.workerCount 5))
+    Write-Host ('Configured workerCount: {0}' -f (Get-ConfigInt $config.workerCount 1))
     Write-Host ('Configured model: {0}' -f $model)
     Write-Host ('Configured reasoning effort: {0}' -f $(if ($config.codexReasoningEffort) { $config.codexReasoningEffort } else { 'xhigh' }))
     Write-Host ('Configured wire API: {0} (effective: {1})' -f $configuredWireApi, $effectiveWireApi)
@@ -144,7 +144,7 @@ function Update-PoolConfig {
     $changed = $false
 
     if ($WorkerCount -gt 0) {
-        $maxSupportedWorkers = Get-ConfigInt $config.maxSupportedWorkers 40
+        $maxSupportedWorkers = Get-ConfigInt $config.maxSupportedWorkers 50
         if ($WorkerCount -gt $maxSupportedWorkers) { throw "WorkerCount $WorkerCount exceeds maxSupportedWorkers $maxSupportedWorkers." }
         $config.workerCount = $WorkerCount
         $changed = $true

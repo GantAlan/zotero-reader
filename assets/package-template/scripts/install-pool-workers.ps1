@@ -19,9 +19,9 @@ function Get-ConfigInt {
     return [int]$Value
 }
 
-if ($WorkerCount -le 0) { $WorkerCount = Get-ConfigInt $config.workerCount 5 }
+if ($WorkerCount -le 0) { $WorkerCount = Get-ConfigInt $config.workerCount 1 }
 if ($TaskPrefix -eq 'ZoteroPaperReadingPool' -and $config.taskPrefix) { $TaskPrefix = [string]$config.taskPrefix }
-$maxSupportedWorkers = Get-ConfigInt $config.maxSupportedWorkers 40
+$maxSupportedWorkers = Get-ConfigInt $config.maxSupportedWorkers 50
 if ($WorkerCount -lt 1) { throw "WorkerCount must be >= 1." }
 if ($WorkerCount -gt $maxSupportedWorkers) { throw "WorkerCount $WorkerCount exceeds maxSupportedWorkers $maxSupportedWorkers in $ConfigFile." }
 $workerIdPrefix = if ($config.workerIdPrefix) { [string]$config.workerIdPrefix } else { 'worker' }

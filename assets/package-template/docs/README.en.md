@@ -41,6 +41,8 @@ You need:
 - Zotero local API available at `http://127.0.0.1:23119`.
 - Codex CLI / Codex Desktop available.
 - PDF attachments on the Zotero items you want to process. Items without PDFs are excluded and reported.
+- The Zotero plugin cache is not required; the worker uses Zotero Desktop's local API to resolve attachment file URLs.
+- `zoterostyle.json` is optional. If it is unavailable, queue building and paper reading continue without journal quartile lookup.
 
 Recommended PowerShell environment variables:
 

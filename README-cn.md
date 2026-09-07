@@ -64,7 +64,7 @@ cd "C:\Users\<你的用户名>\Desktop\paper-reading-pool"
 推荐使用脚本设置 Zotero collection，而不是手动改 key：
 
 ```powershell
-.\scripts\set-zotero-collection.ps1
+.\scripts\set-zotero-collection.ps1 -Path "一级分组 -> 二级分组" -RebuildQueue
 ```
 
 你可以按 Zotero collection 路径填写，例如：

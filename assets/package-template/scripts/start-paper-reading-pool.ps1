@@ -22,9 +22,9 @@ function Get-ConfigInt {
     return [int]$Value
 }
 
-$configuredWorkerCount = Get-ConfigInt $config.workerCount 5
+$configuredWorkerCount = Get-ConfigInt $config.workerCount 1
 if ($WorkerCount -le 0) { $WorkerCount = $configuredWorkerCount }
-$maxSupportedWorkers = Get-ConfigInt $config.maxSupportedWorkers 40
+$maxSupportedWorkers = Get-ConfigInt $config.maxSupportedWorkers 50
 if ($WorkerCount -lt 1) { throw "WorkerCount must be >= 1." }
 if ($WorkerCount -gt $maxSupportedWorkers) { throw "WorkerCount $WorkerCount exceeds maxSupportedWorkers $maxSupportedWorkers in $ConfigFile." }
 

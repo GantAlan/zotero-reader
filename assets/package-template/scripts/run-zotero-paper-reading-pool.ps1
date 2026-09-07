@@ -23,28 +23,59 @@ function Resolve-ConfiguredPath {
     return (Join-Path $BasePath $expanded)
 }
 
+function Resolve-Executable {
+    param(
+        [string]$ConfiguredValue,
+        [string[]]$CommandNames = @(),
+        [string[]]$FallbackPaths = @(),
+        [string]$DisplayName = 'executable'
+    )
+
+    if ($ConfiguredValue) {
+        $expanded = [Environment]::ExpandEnvironmentVariables($ConfiguredValue.Trim())
+        $looksLikePath = [System.IO.Path]::IsPathRooted($expanded) -or $expanded.Contains('\') -or $expanded.Contains('/')
+        if ($looksLikePath) {
+            $candidatePath = if ([System.IO.Path]::IsPathRooted($expanded)) { $expanded } else { Join-Path $root $expanded }
+            if (Test-Path -LiteralPath $candidatePath) { return (Resolve-Path -LiteralPath $candidatePath).Path }
+            throw "$DisplayName configured at '$candidatePath' was not found. Remove the setting or correct the path."
+        }
+        $configuredCommand = Get-Command $expanded -ErrorAction SilentlyContinue
+        if ($configuredCommand) { return $configuredCommand.Source }
+        throw "$DisplayName command '$expanded' was not found. Remove the setting or install it."
+    }
+
+    foreach ($commandName in $CommandNames) {
+        $command = Get-Command $commandName -ErrorAction SilentlyContinue
+        if ($command) { return $command.Source }
+    }
+    foreach ($fallbackPath in $FallbackPaths) {
+        if ($fallbackPath -and (Test-Path -LiteralPath $fallbackPath)) { return (Resolve-Path -LiteralPath $fallbackPath).Path }
+    }
+    throw "$DisplayName not found. Set the corresponding executable path in the config or add it to PATH."
+}
+
 function Resolve-Python {
+    $configured = if ($config.pythonExecutable) { [string]$config.pythonExecutable } else { $null }
     $bundledPython = Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe'
-    if (Test-Path $bundledPython) { return $bundledPython }
-    $cmd = Get-Command python -ErrorAction SilentlyContinue
-    if ($cmd) { return $cmd.Source }
-    throw 'python.exe not found.'
+    return Resolve-Executable -ConfiguredValue $configured -CommandNames @('python', 'py') -FallbackPaths @($bundledPython) -DisplayName 'python.exe'
 }
 
 function Resolve-Node {
-    $cmd = Get-Command node -ErrorAction SilentlyContinue
-    if ($cmd) { return $cmd.Source }
-
+    $configured = if ($config.nodeExecutable) { [string]$config.nodeExecutable } else { $null }
     $codexBin = Join-Path $env:LOCALAPPDATA 'OpenAI\Codex\bin'
+    $fallbackNodes = @()
     if (Test-Path -LiteralPath $codexBin) {
-        $node = Get-ChildItem -LiteralPath $codexBin -Directory -ErrorAction SilentlyContinue |
+        $fallbackNodes = @(Get-ChildItem -LiteralPath $codexBin -Directory -ErrorAction SilentlyContinue |
             ForEach-Object { Join-Path $_.FullName 'node.exe' } |
-            Where-Object { Test-Path -LiteralPath $_ } |
-            Select-Object -First 1
-        if ($node) { return $node }
+            Where-Object { Test-Path -LiteralPath $_ })
     }
+    return Resolve-Executable -ConfiguredValue $configured -CommandNames @('node') -FallbackPaths $fallbackNodes -DisplayName 'node.exe'
+}
 
-    throw 'node.exe not found.'
+function Resolve-Codex {
+    $configured = if ($config.codexExecutable) { [string]$config.codexExecutable } else { $null }
+    $fallback = Join-Path $env:LOCALAPPDATA 'OpenAI\Codex\bin\codex.exe'
+    return Resolve-Executable -ConfiguredValue $configured -CommandNames @('codex') -FallbackPaths @($fallback) -DisplayName 'codex.exe'
 }
 
 $root = Resolve-ConfiguredPath ([string]$config.root)
@@ -301,6 +332,58 @@ try {
     }
 }
 
+function Get-ZoteroLocalApiBaseUrl {
+    $configured = if ($config.zoteroLocalApiBaseUrl) { [string]$config.zoteroLocalApiBaseUrl } else { [string]$env:ZOTERO_LOCAL_BASE_URL }
+    if (-not $configured) { $configured = 'http://127.0.0.1:23119' }
+    $configured = $configured.TrimEnd('/')
+    if ($configured.EndsWith('/api/users/0', [StringComparison]::OrdinalIgnoreCase)) {
+        $configured = $configured.Substring(0, $configured.Length - '/api/users/0'.Length).TrimEnd('/')
+    }
+    return $configured
+}
+
+function Invoke-ZoteroLocalApiText {
+    param([Parameter(Mandatory = $true)][string]$RelativePath)
+
+    $baseUrl = Get-ZoteroLocalApiBaseUrl
+    $relative = if ($RelativePath.StartsWith('/')) { $RelativePath } else { '/' + $RelativePath }
+    $uri = $baseUrl + '/api/users/0' + $relative
+    $request = [System.Net.HttpWebRequest]::Create($uri)
+    $request.Method = 'GET'
+    $request.Proxy = $null
+    $request.Timeout = 30000
+    $request.ReadWriteTimeout = 30000
+    $request.Headers['Zotero-API-Version'] = '3'
+    $response = $null
+    $stream = $null
+    $reader = $null
+    try {
+        $response = $request.GetResponse()
+        $stream = $response.GetResponseStream()
+        $reader = New-Object System.IO.StreamReader($stream)
+        return $reader.ReadToEnd().Trim()
+    } catch {
+        $detail = $_.Exception.Message
+        try {
+            if ($_.Exception.Response) {
+                $errorStream = $_.Exception.Response.GetResponseStream()
+                if ($errorStream) {
+                    $errorReader = New-Object System.IO.StreamReader($errorStream)
+                    $errorBody = $errorReader.ReadToEnd()
+                    if ($errorBody) { $detail += ': ' + $errorBody.Trim() }
+                    $errorReader.Dispose()
+                    $errorStream.Dispose()
+                }
+            }
+        } catch {}
+        throw "Zotero local API request failed ($uri): $detail"
+    } finally {
+        if ($reader) { $reader.Dispose() }
+        if ($stream) { $stream.Dispose() }
+        if ($response) { $response.Dispose() }
+    }
+}
+
 function Resolve-ZoteroStyleCache {
     $candidates = @()
     if ($config.zoteroStyleCandidates) {
@@ -308,12 +391,19 @@ function Resolve-ZoteroStyleCache {
             if ($candidate) { $candidates += Resolve-ConfiguredPath ([string]$candidate) $root }
         }
     }
-    $candidates += @("$env:USERPROFILE\Zotero\zoterostyle.json")
+    $candidates += (Join-Path $env:USERPROFILE 'Zotero\zoterostyle.json')
     foreach ($candidate in $candidates) { if (Test-Path -LiteralPath $candidate) { return $candidate } }
-    throw "No Zotero style cache found. Checked: $($candidates -join '; ')"
+    return $null
 }
 
 function Resolve-ZoteroHelper {
+    $configured = if ($config.zoteroHelperPath) { [string]$config.zoteroHelperPath } else { [string]$env:ZOTERO_HELPER_PATH }
+    if ($configured) {
+        $expanded = [Environment]::ExpandEnvironmentVariables($configured.Trim())
+        $candidatePath = if ([System.IO.Path]::IsPathRooted($expanded)) { $expanded } else { Join-Path $root $expanded }
+        if (Test-Path -LiteralPath $candidatePath) { return (Resolve-Path -LiteralPath $candidatePath).Path }
+        throw "Configured Zotero helper was not found: $candidatePath"
+    }
     $candidateRoot = Join-Path $env:USERPROFILE '.codex\plugins\cache\openai-curated\zotero'
     if (-not (Test-Path -LiteralPath $candidateRoot)) { return $null }
     $helper = Get-ChildItem -LiteralPath $candidateRoot -Recurse -Filter 'zotero.py' -ErrorAction SilentlyContinue |
@@ -323,9 +413,53 @@ function Resolve-ZoteroHelper {
     return $null
 }
 
+function Resolve-ZoteroAttachmentFilePath {
+    param(
+        [Parameter(Mandatory = $true)][string]$AttachmentKey,
+        [Parameter(Mandatory = $true)][string]$PythonExe,
+        [string]$OptionalHelper
+    )
+
+    $directError = $null
+    try {
+        $escapedKey = [Uri]::EscapeDataString($AttachmentKey)
+        $raw = Invoke-ZoteroLocalApiText -RelativePath "/items/$escapedKey/file/view/url"
+        if ($raw) {
+            $fileUrl = $raw
+            try {
+                $decoded = $raw | ConvertFrom-Json
+                if ($decoded -is [string]) { $fileUrl = [string]$decoded }
+                elseif ($decoded.url) { $fileUrl = [string]$decoded.url }
+                elseif ($decoded.path) { $fileUrl = [string]$decoded.path }
+            } catch {}
+            $path = Convert-FileUrlToPath $fileUrl
+            if ($path) { return $path }
+            $directError = "Zotero returned a non-local file URL: $fileUrl"
+        } else {
+            $directError = 'Zotero returned an empty file URL.'
+        }
+    } catch {
+        $directError = $_.Exception.Message
+    }
+
+    if ($OptionalHelper) {
+        try {
+            $helperOutput = & $PythonExe $OptionalHelper file-url $AttachmentKey 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                $path = Convert-FileUrlToPath (($helperOutput | Select-Object -First 1) -as [string])
+                if ($path) { return $path }
+            }
+        } catch {}
+    }
+
+    if ($directError) { Write-SchedulerLog "attachment file path lookup failed for ${AttachmentKey}: $directError" }
+    return $null
+}
+
 function Get-StyleRankSummary {
     param([string]$StyleCachePath, [string]$PublicationTitle)
-    if (-not $PublicationTitle -or -not (Test-Path -LiteralPath $StyleCachePath)) { return 'not found' }
+    if ([string]::IsNullOrWhiteSpace($PublicationTitle)) { return 'not found' }
+    if ([string]::IsNullOrWhiteSpace($StyleCachePath) -or -not (Test-Path -LiteralPath $StyleCachePath)) { return 'not configured; journal quartile lookup skipped' }
     try {
         $style = Get-Content -LiteralPath $StyleCachePath -Raw -Encoding UTF8 | ConvertFrom-Json
         $property = $style.PSObject.Properties | Where-Object { $_.Name -eq $PublicationTitle } | Select-Object -First 1
@@ -340,7 +474,16 @@ function Get-StyleRankSummary {
 function Convert-FileUrlToPath {
     param([string]$FileUrl)
     if (-not $FileUrl) { return $null }
-    try { return ([System.Uri]::new($FileUrl.Trim())).LocalPath } catch { return $null }
+    $value = $FileUrl.Trim()
+    if (Test-Path -LiteralPath $value) { return (Resolve-Path -LiteralPath $value).Path }
+    try {
+        $uri = [System.Uri]::new($value)
+        if ($uri.IsFile) { return $uri.LocalPath }
+    } catch {}
+    if ([System.IO.Path]::IsPathRooted($value) -and (Test-Path -LiteralPath $value)) {
+        return (Resolve-Path -LiteralPath $value).Path
+    }
+    return $null
 }
 
 function Get-DelimitedBlock {
@@ -455,7 +598,7 @@ print(len(text))
 }
 
 $styleCacheFile = Resolve-ZoteroStyleCache
-$zoteroDataDir = Split-Path -Parent $styleCacheFile
+$zoteroDataDir = if ($styleCacheFile) { Split-Path -Parent $styleCacheFile } else { $root }
 New-Item -ItemType Directory -Force -Path $studyRoot | Out-Null
 New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
 $schedulerLog = Join-Path $logRoot 'scheduler.log'
@@ -578,15 +721,13 @@ while ($true) {
         $instructionFile = Join-Path $targetOutputDir 'fill-instructions.md'
         $pythonExeForPrompt = Resolve-Python
         $zoteroHelper = Resolve-ZoteroHelper
-        $zoteroHelperText = if ($zoteroHelper) { $zoteroHelper } else { 'not found; use direct HTTP API at http://127.0.0.1:23119/api/users/0' }
+        $zoteroApiBaseUrl = Get-ZoteroLocalApiBaseUrl
+        $zoteroHelperText = if ($zoteroHelper) { $zoteroHelper } else { "not configured; worker uses direct Zotero local API at $zoteroApiBaseUrl" }
         $styleRankSummary = Get-StyleRankSummary $styleCacheFile ([string]$target.publicationTitle)
+        $styleCacheInstruction = if ($styleCacheFile) { $styleCacheFile } else { 'not configured; journal quartile lookup is optional and skipped' }
         $generatedAt = Get-Date -Format 'yyyy/MM/dd HH:mm:ss'
-        $pdfFilePath = $null
         $pdfTextFile = Join-Path $workerLogDir "codex_paper_fulltext_$timestamp.txt"
-        if ($zoteroHelper) {
-            $pdfUrlOutput = & $pythonExeForPrompt $zoteroHelper file-url $target.attachmentKey 2>&1
-            if ($LASTEXITCODE -eq 0) { $pdfFilePath = Convert-FileUrlToPath (($pdfUrlOutput | Select-Object -First 1) -as [string]) }
-        }
+        $pdfFilePath = Resolve-ZoteroAttachmentFilePath -AttachmentKey ([string]$target.attachmentKey) -PythonExe $pythonExeForPrompt -OptionalHelper $zoteroHelper
         $pdfTextReady = Export-PdfText $pythonExeForPrompt $pdfFilePath $pdfTextFile
         $pdfTextInstruction = if ($pdfTextReady) { $pdfTextFile } else { 'not pre-extracted; use the local PDF path or Zotero helper fallback' }
         $templateTextForPrompt = Get-TextForPrompt $templateFile 20000
@@ -616,7 +757,7 @@ Target paper:
 Required inputs:
 - Template file: $templateFile
 - Field instructions: $instructionFile
-- Zotero Style journal cache: $styleCacheFile
+- Zotero Style journal cache: $styleCacheInstruction
 - Windows Python executable: $pythonExeForPrompt
 - Zotero helper script: $zoteroHelperText
 - Local PDF file: $pdfFilePath
@@ -647,7 +788,7 @@ Workflow requirements:
 4. Use the embedded template and field instructions above.
 5. Fill every field in Chinese according to the instructions.
 6. For the Basic Information Date row, use exactly this generated timestamp and no other date: $generatedAt
-7. For Quartile, use the precomputed journal quartile summary above. Only read $styleCacheFile if the summary says lookup failed or not found. Never print the full Zotero Style cache to the console.
+7. For Quartile, use the precomputed journal quartile summary above. If it says not configured or not found, write that the quartile is unavailable; do not invent a value or print the full Zotero Style cache.
 8. Use collection-local index $queueIndex as the filename sequence number. Do not compute sequence by scanning existing notes.
 9. Do not add colors, HTML, CSS, badges, or decorative Markdown styles.
 10. Keep terminal output brief. Do not echo large files such as PDF full text, Zotero Style JSON, or the completed note.
@@ -676,8 +817,7 @@ If you cannot complete the note, do not output the markers. Explain the blocker 
         $args = @()
         $cmd = $null
         if ($codexConfig.WireApi -eq 'responses') {
-            $cmd = Join-Path $env:LOCALAPPDATA 'OpenAI\Codex\bin\codex.exe'
-            if (-not (Test-Path $cmd)) { throw "codex.exe not found at $cmd" }
+            $cmd = Resolve-Codex
             if ($codexConfig.EnableSearch) { $args += '--search' }
             $args += @('--ask-for-approval', $codexConfig.AskForApproval, 'exec', '--model', $codexConfig.Model, '--config', "model_reasoning_effort=`"$($codexConfig.ReasoningEffort)`"", '--config', "model_providers.custom.wire_api=`"responses`"", '--skip-git-repo-check', '--cd', $root, '--add-dir', $zoteroDataDir, '--sandbox', $codexConfig.Sandbox, '--output-last-message', $lastMessage)
             if ($codexConfig.ExtraArgs.Count -gt 0) { $args += $codexConfig.ExtraArgs }
@@ -756,6 +896,7 @@ Your previous response did not contain the required BEGIN/END protocol markers. 
         if (-not $noteFileName.StartsWith($desiredPrefix)) {
             if ($noteFileName -match '^\d+_(.+)$') { $noteFileName = $desiredPrefix + $matches[1] } else { $noteFileName = $desiredPrefix + $noteFileName }
         }
+        $noteMarkdown = Repair-ReadingNoteDate -Markdown $noteMarkdown -GeneratedAt $generatedAt
         $outputFile = Join-Path $targetOutputDir $noteFileName
         [System.IO.File]::WriteAllText($outputFile, $noteMarkdown.Trim() + [Environment]::NewLine, $utf8NoBom)
         $result = [pscustomobject]@{
@@ -764,7 +905,7 @@ Your previous response did not contain the required BEGIN/END protocol markers. 
             attachmentKey = [string]$target.attachmentKey
             title = [string]$target.title
             outputFile = $outputFile
-            quartileSource = if ($metadata -and $metadata.quartileSource) { [string]$metadata.quartileSource } else { "Zotero Style zoterostyle.json; $styleRankSummary" }
+            quartileSource = if ($metadata -and $metadata.quartileSource) { [string]$metadata.quartileSource } else { "Zotero Style cache; $styleRankSummary" }
             generatedBy = 'worker parsed Codex final response'
         }
         $resultJson = $result | ConvertTo-Json -Depth 10
@@ -773,9 +914,11 @@ Your previous response did not contain the required BEGIN/END protocol markers. 
         Write-SchedulerLog "completed item=$($target.itemKey) result=$resultFile"
     }
     catch {
-        $env:QUEUE_ERROR = $_.Exception.Message
+        $failureMessage = $_.Exception.Message
+        $env:QUEUE_ERROR = $failureMessage
         try { Invoke-WithQueueLock { Invoke-QueueManager -Mode 'fail' } | Out-Null } catch {}
-        Write-SchedulerLog "failed: $($_.Exception.Message)"
+        Write-SchedulerLog "failed: $failureMessage"
+        if ($Once) { throw $failureMessage }
     }
     if ($Once) { return }
 }

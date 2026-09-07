@@ -11,7 +11,6 @@ scripts/
   set-zotero-collection.ps1
   run-once-workers.ps1
 configs/paper-reading-pool-config.example.json
-configs/paper-reading-pool-config.json
 EDIT-TASK-PARAMS.ps1
 EDIT-TASK-PARAMS.annotated.ps1
 study-paper-template/
@@ -21,6 +20,12 @@ study-paper-template/
 If the repository is public, prefer committing only the example config and keep the local config private.
 
 ## Usually Exclude
+
+Keep the local collection config out of a public repository unless it contains only generic placeholders:
+
+```text
+configs/paper-reading-pool-config.json
+```
 
 ```text
 logs/

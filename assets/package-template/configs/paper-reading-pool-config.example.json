@@ -11,6 +11,11 @@
   "codexModel": "mimo-v2.5",
   "codexReasoningEffort": "xhigh",
   "codexWireApi": "auto",
+  "codexExecutable": "",
+  "pythonExecutable": "",
+  "nodeExecutable": "",
+  "zoteroLocalApiBaseUrl": "http://127.0.0.1:23119",
+  "zoteroHelperPath": "",
   "codexEnableSearch": true,
   "codexSandbox": "workspace-write",
   "codexAskForApproval": "never",
@@ -35,4 +40,3 @@
     }
   ]
 }
-

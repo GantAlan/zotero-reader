@@ -1,0 +1,33 @@
+name: validate
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  static-validation:
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Validate PowerShell and JSON
+        shell: pwsh
+        run: ./tests/validate-repository.ps1
+
+      - name: Validate Python syntax
+        shell: pwsh
+        run: |
+          python -c "from pathlib import Path; p=Path('assets/package-template/scripts/pool-queue-manager.py'); compile(p.read_text(encoding='utf-8'), str(p), 'exec'); print('Python syntax validation passed.')"
+
+      - name: Check whitespace errors
+        shell: pwsh
+        run: git diff --check

@@ -41,6 +41,8 @@ zotero-reader/
 - Zotero 本地 API 可访问：`http://127.0.0.1:23119`。
 - Codex CLI 或 Codex Desktop 可用。
 - 目标 Zotero 分组中的文献最好带 PDF 附件；没有 PDF 的文献会被写入排除报告。
+- worker 不依赖 Zotero 插件缓存，会通过 Zotero Desktop 本地 API 获取附件文件路径。
+- `zoterostyle.json` 是可选增强项；缺少它时仍可建队列和阅读，只跳过期刊分区查询。
 
 建议在 PowerShell 中设置：
 

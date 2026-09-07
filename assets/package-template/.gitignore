@@ -22,3 +22,5 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Local Zotero collection and runtime settings
+configs/paper-reading-pool-config.json
